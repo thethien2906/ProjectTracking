@@ -36,6 +36,15 @@ pub struct Log {
     pub next_action: String,
     pub created_at: String,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IndependentTask {
+    pub id: i64,
+    pub description: String,
+    pub status: String,
+    pub created_at: String,
+}
+
 // ── Database Initialization ──────────────────────────────────
 
 pub fn initialize_db(conn: &Connection) -> Result<()> {
@@ -69,6 +78,13 @@ pub fn initialize_db(conn: &Connection) -> Result<()> {
             next_action TEXT DEFAULT '',
             created_at DATETIME DEFAULT (datetime('now','localtime')),
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS independent_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            description TEXT NOT NULL,
+            status TEXT DEFAULT 'todo',
+            created_at DATETIME DEFAULT (datetime('now','localtime'))
         );
         ",
     )?;
@@ -286,6 +302,45 @@ pub fn delete_log(conn: &Connection, log_id: i64) -> Result<()> {
     Ok(())
 }
 
+// ── Independent Task CRUD ────────────────────────────────────
+
+pub fn create_independent_task(conn: &Connection, description: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO independent_tasks (description) VALUES (?1)",
+        params![description],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn get_all_independent_tasks(conn: &Connection) -> Result<Vec<IndependentTask>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, description, status, created_at
+         FROM independent_tasks ORDER BY status ASC, created_at ASC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(IndependentTask {
+            id: row.get(0)?,
+            description: row.get(1)?,
+            status: row.get(2)?,
+            created_at: row.get(3)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn toggle_independent_task_status(conn: &Connection, task_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE independent_tasks SET status = CASE WHEN status='todo' THEN 'done' ELSE 'todo' END WHERE id=?1",
+        params![task_id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_independent_task(conn: &Connection, task_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM independent_tasks WHERE id=?1", params![task_id])?;
+    Ok(())
+}
+
 // ── Search ───────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -293,6 +348,7 @@ pub enum SearchResult {
     ProjectResult(Project),
     TaskResult(Task),
     LogResult(Log),
+    IndependentTaskResult(IndependentTask),
 }
 
 pub fn search_all(conn: &Connection, query: &str) -> Result<Vec<SearchResult>> {
@@ -365,6 +421,25 @@ pub fn search_all(conn: &Connection, query: &str) -> Result<Vec<SearchResult>> {
         }
     }
 
+    // Search independent tasks
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id, description, status, created_at
+             FROM independent_tasks WHERE description LIKE ?1",
+        )?;
+        let rows = stmt.query_map(params![pattern], |row| {
+            Ok(IndependentTask {
+                id: row.get(0)?,
+                description: row.get(1)?,
+                status: row.get(2)?,
+                created_at: row.get(3)?,
+            })
+        })?;
+        for row in rows {
+            results.push(SearchResult::IndependentTaskResult(row?));
+        }
+    }
+
     Ok(results)
 }
 
@@ -375,6 +450,8 @@ pub struct ExportData {
     pub projects: Vec<Project>,
     pub tasks: Vec<Task>,
     pub logs: Vec<Log>,
+    #[serde(default)]
+    pub independent_tasks: Vec<IndependentTask>,
 }
 
 pub fn get_all_projects_including_archived(conn: &Connection) -> Result<Vec<Project>> {
@@ -407,7 +484,8 @@ pub fn export_all_to_json(conn: &Connection) -> Result<String, Box<dyn std::erro
         let p_logs = get_logs_for_project(conn, p.id)?;
         logs.extend(p_logs);
     }
-    let data = ExportData { projects, tasks, logs };
+    let independent_tasks = get_all_independent_tasks(conn)?;
+    let data = ExportData { projects, tasks, logs, independent_tasks };
     Ok(serde_json::to_string_pretty(&data)?)
 }
 
@@ -439,6 +517,15 @@ pub fn import_all_from_json(conn: &Connection, json: &str) -> Result<(), Box<dyn
             )?;
         }
     }
+
+    for it in data.independent_tasks {
+        conn.execute(
+            "INSERT INTO independent_tasks (description, status, created_at)
+             VALUES (?1, ?2, ?3)",
+            params![it.description, it.status, it.created_at],
+        )?;
+    }
+
     conn.execute_batch("COMMIT;")?;
     Ok(())
 }

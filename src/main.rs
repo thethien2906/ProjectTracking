@@ -13,6 +13,7 @@ enum Screen {
     Dashboard,
     ProjectDetail(i64),
     Search,
+    IndependentTasks,
 }
 
 struct App {
@@ -23,8 +24,12 @@ struct App {
     projects: Vec<Project>,
     tasks: Vec<Task>,
     logs: Vec<Log>,
+    independent_tasks: Vec<IndependentTask>,
     current_project: Option<Project>,
     latest_log: Option<Log>,
+
+    // Form state — Independent Tasks
+    new_independent_task_desc: String,
 
     // Form state — Dashboard
     show_create_project: bool,
@@ -54,14 +59,17 @@ impl App {
     fn new(db_path: &str) -> Self {
         let conn = open_db(db_path).expect("Failed to open database");
         let projects = get_all_projects(&conn).unwrap_or_default();
+        let independent_tasks = get_all_independent_tasks(&conn).unwrap_or_default();
         Self {
             conn: Mutex::new(conn),
             screen: Screen::Dashboard,
             projects,
             tasks: Vec::new(),
             logs: Vec::new(),
+            independent_tasks,
             current_project: None,
             latest_log: None,
+            new_independent_task_desc: String::new(),
             show_create_project: false,
             new_project_name: String::new(),
             new_project_goal: String::new(),
@@ -78,6 +86,11 @@ impl App {
             search_performed: false,
             needs_refresh: false,
         }
+    }
+
+    fn refresh_independent_tasks(&mut self) {
+        let conn = self.conn.lock().unwrap();
+        self.independent_tasks = get_all_independent_tasks(&conn).unwrap_or_default();
     }
 
     fn refresh_projects(&mut self) {
@@ -108,6 +121,7 @@ impl eframe::App for App {
         if self.needs_refresh {
             self.needs_refresh = false;
             self.refresh_projects();
+            self.refresh_independent_tasks();
             if let Screen::ProjectDetail(id) = self.screen {
                 self.refresh_project_detail(id);
             }
@@ -125,6 +139,9 @@ impl eframe::App for App {
             if i.key_pressed(egui::Key::D) && i.modifiers.ctrl {
                 shortcut_action = Some("dashboard");
             }
+            if i.key_pressed(egui::Key::I) && i.modifiers.ctrl {
+                shortcut_action = Some("independent_tasks");
+            }
         });
         match shortcut_action {
             Some("search") => {
@@ -136,6 +153,10 @@ impl eframe::App for App {
             Some("dashboard") => {
                 self.screen = Screen::Dashboard;
                 self.refresh_projects();
+            }
+            Some("independent_tasks") => {
+                self.screen = Screen::IndependentTasks;
+                self.refresh_independent_tasks();
             }
             Some("new_task") => {
                 if let Screen::Dashboard = self.screen {
@@ -158,6 +179,10 @@ impl eframe::App for App {
                     if ui.selectable_label(matches!(self.screen, Screen::Dashboard), "Dashboard (Ctrl+D)").clicked() {
                         self.screen = Screen::Dashboard;
                         self.refresh_projects();
+                    }
+                    if ui.selectable_label(matches!(self.screen, Screen::IndependentTasks), "Independent Tasks (Ctrl+I)").clicked() {
+                        self.screen = Screen::IndependentTasks;
+                        self.refresh_independent_tasks();
                     }
                     if ui.selectable_label(matches!(self.screen, Screen::Search), "Search (Ctrl+F)").clicked() {
                         self.screen = Screen::Search;
@@ -184,6 +209,7 @@ impl eframe::App for App {
                 Screen::Dashboard => self.ui_dashboard(ui),
                 Screen::ProjectDetail(id) => self.ui_project_detail(ui, id),
                 Screen::Search => self.ui_search(ui),
+                Screen::IndependentTasks => self.ui_independent_tasks(ui),
             }
         });
     }
@@ -604,6 +630,67 @@ impl App {
         });
     }
 
+    // ── Independent Tasks Screen ─────────────────────────────
+
+    fn ui_independent_tasks(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(12.0);
+        ui.heading(egui::RichText::new("Independent Tasks").size(32.0).strong());
+        ui.add_space(20.0);
+
+        // New task input
+        ui.horizontal(|ui| {
+            ui.label("New task:");
+            let response = ui.text_edit_singleline(&mut self.new_independent_task_desc);
+            if (ui.button("Add").clicked()
+                || (response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter))))
+                && !self.new_independent_task_desc.trim().is_empty()
+            {
+                let conn = self.conn.lock().unwrap();
+                let _ = create_independent_task(&conn, self.new_independent_task_desc.trim());
+                drop(conn);
+                self.new_independent_task_desc.clear();
+                self.refresh_independent_tasks();
+            }
+        });
+        ui.separator();
+        ui.add_space(8.0);
+
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let tasks_clone = self.independent_tasks.clone();
+            for task in &tasks_clone {
+                ui.horizontal(|ui| {
+                    let mut checked = task.status == "done";
+                    if ui.checkbox(&mut checked, "").changed() {
+                        let conn = self.conn.lock().unwrap();
+                        let _ = toggle_independent_task_status(&conn, task.id);
+                        drop(conn);
+                        self.needs_refresh = true;
+                    }
+                    let text = if checked {
+                        egui::RichText::new(&task.description).strikethrough().weak()
+                    } else {
+                        egui::RichText::new(&task.description)
+                    };
+                    ui.label(text);
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            if ui
+                                .button(egui::RichText::new("x").small().weak())
+                                .clicked()
+                            {
+                                let conn = self.conn.lock().unwrap();
+                                let _ = delete_independent_task(&conn, task.id);
+                                drop(conn);
+                                self.needs_refresh = true;
+                            }
+                        },
+                    );
+                });
+            }
+        });
+    }
+
     // ── Search Screen ────────────────────────────────────────
 
     fn ui_search(&mut self, ui: &mut egui::Ui) {
@@ -716,6 +803,36 @@ impl App {
                                         if !l.notes.is_empty() {
                                             ui.label(&l.notes);
                                         }
+                                    });
+                            }
+                            SearchResult::IndependentTaskResult(t) => {
+                                egui::Frame::group(ui.style())
+                                    .inner_margin(egui::Margin::same(6))
+                                    .show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            ui.label(
+                                                egui::RichText::new("[Indep. Task]")
+                                                    .small()
+                                                    .color(egui::Color32::from_rgb(150, 255, 200)),
+                                            );
+                                            if ui
+                                                .add(
+                                                    egui::Label::new(
+                                                        egui::RichText::new(&t.description)
+                                                            .strong(),
+                                                    )
+                                                    .sense(egui::Sense::click()),
+                                                )
+                                                .clicked()
+                                            {
+                                                self.screen = Screen::IndependentTasks;
+                                                self.refresh_independent_tasks();
+                                            }
+                                            ui.label(
+                                                egui::RichText::new(format!("({})", t.status))
+                                                    .weak(),
+                                            );
+                                        });
                                     });
                             }
                         }
