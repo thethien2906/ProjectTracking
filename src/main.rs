@@ -851,31 +851,39 @@ impl App {
 fn main() -> eframe::Result {
     let db_path = "project_tracker.sqlite";
 
-    // Load icon
-    let icon = match image::open("assets/logo.png") {
+    // Load icon and resize to exactly 256x256 for Windows taskbar compatibility
+    let icon_bytes = include_bytes!("../assets/logo.png");
+    let icon = match image::load_from_memory(icon_bytes) {
         Ok(img) => {
-            let img = img.to_rgba8();
-            let (width, height) = img.dimensions();
-            Some(eframe::IconData {
-                rgba: img.into_raw(),
+            // Force standard dimensions for taskbar icons
+            let resized = img.resize_exact(256, 256, image::imageops::FilterType::Lanczos3);
+            let rgba = resized.to_rgba8();
+            let (width, height) = rgba.dimensions();
+            Some(std::sync::Arc::new(egui::IconData {
+                rgba: rgba.into_raw(),
                 width,
                 height,
-            })
+            }))
         }
         Err(_) => None,
     };
 
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([900.0, 620.0])
+        .with_min_inner_size([600.0, 400.0])
+        .with_title("Project Tracker");
+
+    if let Some(i) = icon {
+        viewport = viewport.with_icon(i);
+    }
+
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([900.0, 620.0])
-            .with_min_inner_size([600.0, 400.0])
-            .with_title("Project Tracker")
-            .with_icon(icon.clone().unwrap_or_default()),
+        viewport,
         ..Default::default()
     };
 
     eframe::run_native(
-        "Project Tracker",
+        "ProjectTracker_v1_Logo",
         options,
         Box::new(move |cc| {
             // Apply Cozy Chic Pastel Dark Theme
