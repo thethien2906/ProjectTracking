@@ -174,7 +174,9 @@ impl eframe::App for App {
             .frame(nav_frame)
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("❖ Tracker").size(20.0).strong());
+                    ui.add(egui::Image::new(egui::include_image!("../assets/logo.png")).max_width(32.0).corner_radius(8));
+                    ui.add_space(8.0);
+                    ui.label(egui::RichText::new("Project Tracker").size(20.0).strong());
                     ui.add_space(24.0);
                     if ui.selectable_label(matches!(self.screen, Screen::Dashboard), "Dashboard (Ctrl+D)").clicked() {
                         self.screen = Screen::Dashboard;
@@ -849,11 +851,26 @@ impl App {
 fn main() -> eframe::Result {
     let db_path = "project_tracker.sqlite";
 
+    // Load icon
+    let icon = match image::open("assets/logo.png") {
+        Ok(img) => {
+            let img = img.to_rgba8();
+            let (width, height) = img.dimensions();
+            Some(eframe::IconData {
+                rgba: img.into_raw(),
+                width,
+                height,
+            })
+        }
+        Err(_) => None,
+    };
+
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([900.0, 620.0])
             .with_min_inner_size([600.0, 400.0])
-            .with_title("Project Tracker"),
+            .with_title("Project Tracker")
+            .with_icon(icon.clone().unwrap_or_default()),
         ..Default::default()
     };
 
@@ -922,6 +939,7 @@ fn main() -> eframe::Result {
             style.text_styles.insert(egui::TextStyle::Monospace, FontId::new(14.0, FontFamily::Monospace));
             style.text_styles.insert(egui::TextStyle::Button, FontId::new(16.0, FontFamily::Proportional));
 
+            egui_extras::install_image_loaders(&cc.egui_ctx);
             cc.egui_ctx.set_visuals(visuals);
             cc.egui_ctx.set_style(style);
 
