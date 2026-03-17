@@ -2,9 +2,11 @@
 #![allow(clippy::enum_variant_names)]
 use rusqlite::{params, Connection, Result};
 
+use serde::{Deserialize, Serialize};
+
 // ── Data Models ──────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: i64,
     pub name: String,
@@ -16,7 +18,7 @@ pub struct Project {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Task {
     pub id: i64,
     pub project_id: i64,
@@ -25,7 +27,7 @@ pub struct Task {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Log {
     pub id: i64,
     pub project_id: i64,
@@ -34,7 +36,6 @@ pub struct Log {
     pub next_action: String,
     pub created_at: String,
 }
-
 // ── Database Initialization ──────────────────────────────────
 
 pub fn initialize_db(conn: &Connection) -> Result<()> {
@@ -365,6 +366,81 @@ pub fn search_all(conn: &Connection, query: &str) -> Result<Vec<SearchResult>> {
     }
 
     Ok(results)
+}
+
+// ── Export / Import ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportData {
+    pub projects: Vec<Project>,
+    pub tasks: Vec<Task>,
+    pub logs: Vec<Log>,
+}
+
+pub fn get_all_projects_including_archived(conn: &Connection) -> Result<Vec<Project>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, name, goal, status, progress, current_task, created_at, updated_at
+         FROM projects ORDER BY updated_at DESC",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(Project {
+            id: row.get(0)?,
+            name: row.get(1)?,
+            goal: row.get(2)?,
+            status: row.get(3)?,
+            progress: row.get(4)?,
+            current_task: row.get(5)?,
+            created_at: row.get(6)?,
+            updated_at: row.get(7)?,
+        })
+    })?;
+    rows.collect()
+}
+
+pub fn export_all_to_json(conn: &Connection) -> Result<String, Box<dyn std::error::Error>> {
+    let projects = get_all_projects_including_archived(conn)?;
+    let mut tasks = Vec::new();
+    let mut logs = Vec::new();
+    for p in &projects {
+        let p_tasks = get_tasks_for_project(conn, p.id)?;
+        tasks.extend(p_tasks);
+        let p_logs = get_logs_for_project(conn, p.id)?;
+        logs.extend(p_logs);
+    }
+    let data = ExportData { projects, tasks, logs };
+    Ok(serde_json::to_string_pretty(&data)?)
+}
+
+pub fn import_all_from_json(conn: &Connection, json: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let data: ExportData = serde_json::from_str(json)?;
+    conn.execute_batch("BEGIN TRANSACTION;")?;
+    for p in data.projects {
+        let old_id = p.id;
+        conn.execute(
+            "INSERT INTO projects (name, goal, status, progress, current_task, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![p.name, p.goal, p.status, p.progress, p.current_task, p.created_at, p.updated_at],
+        )?;
+        let new_id = conn.last_insert_rowid();
+        
+        for t in data.tasks.iter().filter(|t| t.project_id == old_id) {
+            conn.execute(
+                "INSERT INTO tasks (project_id, description, status, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![new_id, t.description, t.status, t.created_at],
+            )?;
+        }
+        
+        for l in data.logs.iter().filter(|l| l.project_id == old_id) {
+            conn.execute(
+                "INSERT INTO logs (project_id, date, notes, next_action, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                 params![new_id, l.date, l.notes, l.next_action, l.created_at],
+            )?;
+        }
+    }
+    conn.execute_batch("COMMIT;")?;
+    Ok(())
 }
 
 // ── Tests ────────────────────────────────────────────────────

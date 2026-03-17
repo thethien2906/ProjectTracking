@@ -199,6 +199,26 @@ impl App {
                 if ui.button("✨ New Project").clicked() {
                     self.show_create_project = true;
                 }
+                ui.add_space(8.0);
+                if ui.button("📥 Import").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).pick_file() {
+                        if let Ok(json) = std::fs::read_to_string(path) {
+                            let conn = self.conn.lock().unwrap();
+                            let _ = import_all_from_json(&conn, &json);
+                            drop(conn);
+                            self.needs_refresh = true;
+                        }
+                    }
+                }
+                ui.add_space(8.0);
+                if ui.button("📤 Export").clicked() {
+                    if let Some(path) = rfd::FileDialog::new().add_filter("JSON", &["json"]).save_file() {
+                        let conn = self.conn.lock().unwrap();
+                        if let Ok(json) = export_all_to_json(&conn) {
+                            let _ = std::fs::write(path, json);
+                        }
+                    }
+                }
             });
         });
         ui.add_space(20.0);
